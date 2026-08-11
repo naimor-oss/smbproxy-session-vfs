@@ -1,0 +1,120 @@
+name: Trixie Samba compatibility
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 10 * * 1"
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    container: debian:trixie-slim
+    outputs:
+      candidate: ${{ steps.version.outputs.candidate }}
+      tracked: ${{ steps.version.outputs.tracked }}
+      changed: ${{ steps.version.outputs.changed }}
+    steps:
+      - name: Install checkout prerequisites
+        run: apt-get update -y && apt-get install -y ca-certificates git
+      - uses: actions/checkout@v4
+      - name: Resolve Trixie Samba candidate
+        id: version
+        shell: bash
+        run: |
+          apt-get update -y
+          set +e
+          output=$(scripts/check-trixie-version.sh)
+          rc=$?
+          set -e
+          if [[ $rc -ne 0 && $rc -ne 10 ]]; then
+              printf '%s\n' "$output" >&2
+              exit "$rc"
+          fi
+          printf '%s\n' "$output"
+          tracked=$(sed -n 's/^tracked=//p' <<< "$output")
+          candidate=$(sed -n 's/^candidate=//p' <<< "$output")
+          [[ "$candidate" != "$tracked" ]] && changed=true || changed=false
+          echo "tracked=$tracked" >> "$GITHUB_OUTPUT"
+          echo "candidate=$candidate" >> "$GITHUB_OUTPUT"
+          echo "changed=$changed" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: detect
+    if: github.event_name != 'schedule' || needs.detect.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    container: debian:trixie
+    steps:
+      - name: Install checkout prerequisites
+        run: apt-get update -y && apt-get install -y ca-certificates git
+      - uses: actions/checkout@v4
+      - name: Select build target
+        id: target
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "schedule" ]]; then
+              version="${{ needs.detect.outputs.candidate }}"
+          else
+              version="${{ needs.detect.outputs.tracked }}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          safe_version=$(sed 's/[^0-9A-Za-z._+-]/-/g' <<< "$version")
+          echo "safe_version=$safe_version" >> "$GITHUB_OUTPUT"
+      - name: Build exact-revision Debian package
+        shell: bash
+        run: |
+          scripts/build-debian-package.sh \
+              --samba-version "${{ steps.target.outputs.version }}" \
+              --output-dir dist
+      - name: Inspect package contract
+        shell: bash
+        run: |
+          package=$(find dist -maxdepth 1 -name '*.deb' -print -quit)
+          dpkg-deb --info "$package"
+          dpkg-deb --contents "$package"
+          dpkg-deb -f "$package" Depends \
+              | grep -qxF "samba (= ${{ steps.target.outputs.version }})"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: smbproxy-session-vfs-${{ steps.target.outputs.safe_version }}-amd64
+          path: dist/
+          if-no-files-found: error
+
+  report-update:
+    needs: [detect, build]
+    if: github.event_name == 'schedule' && needs.detect.outputs.changed == 'true' && needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Open one qualification issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const tracked = '${{ needs.detect.outputs.tracked }}';
+            const candidate = '${{ needs.detect.outputs.candidate }}';
+            const title = `Qualify Debian Trixie Samba ${candidate}`;
+            const { data } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              per_page: 100
+            });
+            if (data.some(issue => issue.title === title)) return;
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body: [
+                `Tracked revision: \`${tracked}\``,
+                `Trixie candidate: \`${candidate}\``,
+                '',
+                `The exact-revision package built successfully in [this workflow run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}).`,
+                '',
+                'Compilation is not approval. Complete `docs/MAINTENANCE.md`, including the real-backend lock and Clarion TopSpeed gates, before advancing `compatibility/trixie.env` or the appliance pin.'
+              ].join('\n')
+            });

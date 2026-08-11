@@ -1,0 +1,8 @@
+.DS_Store
+.claude/
+.codex/
+.cursor/
+.continue/
+.aider*
+dist/
+work/

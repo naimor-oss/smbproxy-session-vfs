@@ -1,0 +1,91 @@
+name: Publish signed APT repository
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: debian:trixie
+    steps:
+      - name: Install checkout and repository prerequisites
+        run: |
+          apt-get update -y
+          apt-get install -y apt-utils ca-certificates curl dpkg-dev git gnupg
+      - uses: actions/checkout@v4
+      - name: Validate tag matches component version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+              expected="v$(tr -d '[:space:]' < VERSION)"
+              [[ "$GITHUB_REF_NAME" == "$expected" \
+                 || "$GITHUB_REF_NAME" == "$expected-"* ]] || {
+                  echo "tag $GITHUB_REF_NAME does not match VERSION ($expected)" >&2
+                  exit 2
+              }
+          fi
+      - name: Import APT signing key
+        shell: bash
+        env:
+          APT_SIGNING_KEY_B64: ${{ secrets.APT_SIGNING_KEY_B64 }}
+          APT_SIGNING_KEY_FINGERPRINT: ${{ secrets.APT_SIGNING_KEY_FINGERPRINT }}
+        run: |
+          [[ -n "$APT_SIGNING_KEY_B64" && -n "$APT_SIGNING_KEY_FINGERPRINT" ]]
+          printf '%s' "$APT_SIGNING_KEY_B64" | base64 -d | gpg --batch --import
+          gpg --batch --list-secret-keys "$APT_SIGNING_KEY_FINGERPRINT"
+      - name: Build accepted Trixie package
+        shell: bash
+        run: |
+          source compatibility/trixie.env
+          scripts/build-debian-package.sh \
+              --samba-version "$SAMBA_DEB_VERSION" \
+              --output-dir dist
+      - name: Retain previously published qualified packages
+        shell: bash
+        env:
+          PAGES_BASE_URL: https://naimor-oss.github.io/smbproxy-session-vfs
+        run: |
+          packages_file=$(mktemp)
+          if curl -fsS "$PAGES_BASE_URL/dists/trixie/main/binary-amd64/Packages" \
+              -o "$packages_file"; then
+              while IFS= read -r filename; do
+                  [[ -n "$filename" ]] || continue
+                  curl -fsS "$PAGES_BASE_URL/$filename" \
+                      -o "dist/$(basename "$filename")"
+              done < <(sed -n 's/^Filename: //p' "$packages_file")
+          fi
+      - name: Build signed repository
+        shell: bash
+        env:
+          APT_SIGNING_KEY_FINGERPRINT: ${{ secrets.APT_SIGNING_KEY_FINGERPRINT }}
+        run: |
+          scripts/build-apt-repository.sh \
+              --input dist \
+              --output apt-repository \
+              --suite trixie
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: apt-repository
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Deploy APT repository
+        id: deployment
+        uses: actions/deploy-pages@v4
