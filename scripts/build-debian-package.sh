@@ -54,6 +54,12 @@ BUILD_ROOT=$(mktemp -d /tmp/smbproxy-session-vfs-build.XXXXXX)
 MANUAL_BEFORE="$BUILD_ROOT/manual-before"
 SOURCE_LIST=/etc/apt/sources.list.d/smbproxy-session-vfs-build.sources
 SOURCE_LIST_CREATED=0
+# Every binary built from the samba source carries the same version and
+# depends on its siblings with "=". Asking apt for samba=<old> alone fails
+# once a newer point release exists, because samba-common-bin, samba-libs,
+# ... still resolve to the newest candidate. A temporary source pin moves
+# the whole family to the target revision together.
+SAMBA_PIN=/etc/apt/preferences.d/smbproxy-session-vfs-build-samba.pref
 MANUAL_MARKS_RESTORED=0
 
 restore_manual_marks() {
@@ -72,16 +78,27 @@ cleanup() {
     set +e
     restore_manual_marks
     [[ $SOURCE_LIST_CREATED -eq 0 ]] || rm -f "$SOURCE_LIST"
+    rm -f "$SAMBA_PIN"
     rm -rf "$BUILD_ROOT"
     exit "$rc"
 }
 trap cleanup EXIT
 
 apt-mark showmanual | sort > "$MANUAL_BEFORE"
+# Bundled libraries carry their own upstream version with the Samba
+# revision as a suffix (libldb2 2:2.11.0+samba4.22.10+dfsg-0+deb13u2), so
+# pin on the epoch-less Samba revision shared by every binary.
+cat > "$SAMBA_PIN" <<PIN
+Package: src:samba
+Pin: version *${SAMBA_DEB_VERSION#*:}
+Pin-Priority: 1001
+PIN
 apt-get update -y
 installed_version=$(dpkg-query -W -f='${Version}' samba 2>/dev/null || true)
 if [[ "$installed_version" != "$SAMBA_DEB_VERSION" ]]; then
-    DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    # A fresh image may already carry a newer point release; the pin above
+    # moves the whole family back, which apt treats as a downgrade.
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --allow-downgrades \
         "samba=$SAMBA_DEB_VERSION"
 fi
 
