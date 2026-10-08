@@ -53,6 +53,25 @@ For a new legacy server or Windows release, record:
 - **SMB1 availability:** modern Windows patch and installation history affects
   whether SMB1 binaries exist; the OS name alone is insufficient.
 
+## Read-error semantics of the 16 KiB read shim
+
+`pread` and `pread_send` split a request into sequential 16 KiB chunks.
+If any chunk fails, the whole request fails with that chunk's error, and
+bytes already read are not returned. This deliberately matches Samba's own
+default VFS: `sys_pread_full()` (`lib/util/sys_rw.c`), which `vfs_default`
+uses for both the synchronous and the thread-pool path, also returns `-1`
+on a later failure. smbd sends a `pread_recv` count straight to the client
+as the read length, so returning partial progress would turn a backend
+error into a silent short read, which a record-oriented legacy
+application could mistake for end of file. Checked against Samba
+4.22.11+dfsg-0+deb13u1 (code-review session plan 08, closed without a
+change on 2026-10-08).
+
+The shim stops at a short non-zero chunk, while `sys_pread_full()` keeps
+reading until EOF. A CIFS backend returns a short read only at EOF, so the
+result is the same. Revisit this if the backend ever returns short reads
+before EOF.
+
 ## Authoritative protocol references
 
 - Microsoft [MS-CIFS] version and capability negotiation:
