@@ -76,7 +76,7 @@ Component `0.2.0` mitigates the defect by serializing frontend reads into
 16-KiB backend `pread` operations. This changes transfer shape only: opens,
 sessions, share modes, and byte-range locks continue through the normal VFS and
 CIFS paths. It is not accepted until the exact-Samba build, downstream large
-copy, two-session lock gate, and real ProfitFab test all pass.
+copy, two-session lock gate, and real application test all pass.
 
 The exact-Samba amd64 package was installed on the production proxy on
 2026-08-10. The package/version guard, configuration hash comparison, service
