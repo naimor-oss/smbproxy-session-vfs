@@ -57,8 +57,13 @@ lock-conflict gate for every release.
 
 **Status:** reproduced; mitigated by component `0.2.0` (accepted 2026-10-19).
 
-The production backend is Windows Server 2008 SP2 x86 build `6.0.6002` with
-`srv.sys` `6.0.6002.18005`, SMB2 disabled, and SMB1 signing required. Against
+The production backend is Windows Server 2008 SP2 x86 build `6.0.6003` with
+`srv.sys` `6.0.6003.20708` (checked on the server 2026-10-19), SMB2 disabled
+(`SMB2=0`) and oplocks disabled (`EnableOplocks=0`). Its SMB1 signing is
+neither required nor enabled (`requiresecuritysignature=0`,
+`enablesecuritysignature=0`), so the signed exchanges below were requested by
+the client side. An earlier version of this entry gave build `6.0.6002`,
+`srv.sys` `6.0.6002.18005` and signing required; that was out of date. Against
 Linux CIFS `2.51` on Debian kernels `6.12.86` and `6.12.101`, one application
 read larger than the negotiated SMB1 read size is split into multiple signed
 `SMB_COM_READ_ANDX` requests. Linux rejects responses with error `-13`; the
@@ -93,11 +98,9 @@ the appliance's `lab/scenarios/tps-lock-isolation.sh`:
   one file) and `smb2.sharemode.sharemode-access` (a full-access create) fail
   with `NT_STATUS_ACCESS_DENIED`; `smb2.rename.no_share_delete_but_delete_access`
   passes. Why is not yet traced.
-- The clone measured Windows build `6.0.6003` with `srv.sys` `6.0.6003.20708`,
-  and SMB1 signing enabled but **not required** (a session with signing
-  disabled succeeds). This differs from the backend description above. It is
-  to be reconciled against the production server before this entry is
-  revised.
+- The clone measured the same build, `srv.sys` and signing settings as the
+  production server (described above): a session with signing disabled
+  succeeds.
 
 Do not disable required signing or enable permissive signature handling as an
 undocumented workaround. Updating the legacy server remains desirable because
